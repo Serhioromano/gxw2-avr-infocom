@@ -1,41 +1,93 @@
+(* SetOn — запрошенное положение, IsOn — фактическое положение.
+   Vkl и Otkl — выходы включения и отключения. Блок не меняет режим управления. *)
+
+(* При квитировании сбросить зафиксированную ошибку блока, затем проверить, сохраняется ли её причина.
+   Перед вызовом библиотечного блока обнулить временный результат: если Q не будет записан
+   в этом цикле ПЛК, значение TRUE из предыдущего цикла не должно снова установить xError. *)
 RST(xError AND ResetAlarm, xError);
-
-(* Самостоятельно октлючился в авто режиме
-или сработало аварийное отключение *)
 xTempError := FALSE;
-fbAmIsOn(iNum := AlarmNum, Q := xTempError);
+fbAmIsOn(
+    iNum := AlarmNum,
+    Q := xTempError
+);
+SET(xTempError, xError); (* Активная тревога снова устанавливает xError даже при квитировании. *)
 
-SET(fbAmIsOn.Q, xError);
-SET(xError AND ResetAlarm, xOff);
+(* Подтверждать положение только после 100 мс стабильного сигнала обратной связи. *)
+fbTONOn(
+    IN := IsOn,
+    PT := T#100ms
+);
+fbTONOff(
+    IN := NOT IsOn,
+    PT := T#100ms
+);
+(* Каждый таймер сбрасывается вне своего шага. Первый завершает импульс включения;
+   второй отсчитывает паузу 7 с для привода после снятия сигнала включения. *)
+fbVklPulse(
+    IN := iVklStep = 10,
+    PT := T#900ms
+);
+fbVklWait(
+    IN := iVklStep = 20,
+    PT := T#7s
+);
 
-fbTONOn(IN := isOn, PT := T#100ms);
-fbTONOff(IN := NOT isOn, PT := T#100ms);
-
-IF NOT xError THEN
-	(* Задача включить автомат *)
-	SET(MEP(SetOn) AND NOT IsOn, xOn);
-
-	(* Задача отключить автомат *)
-    SET(MEF(SetOn) AND IsOn, xOff);
-
-	(* Автомат сам отключился *)
-	RST(SetOn AND MEP(fbTONOff.Q), SetOn);
-
-	(* Автомат сам включился *)
-	RST(NOT SetOn AND MEP(fbTONOn.Q), gxAvto);
-	SET(NOT SetOn AND MEP(fbTONOn.Q), SetOn);
+(* Пересчитывать сигналы неисправности в каждом цикле ПЛК. PRG_MAIN фиксирует обнаруженную неисправность. *)
+xVklFailed := FALSE;
+xUnexpectedOff := FALSE;
+IF NOT xDrivePower OR NOT SetOn OR xError THEN
+    (* Как только запрос становится недопустимым, снять сигнал включения и отменить повторные попытки. *)
+    xWasClosed := FALSE;
+    iVklStep := 0;
+    iVklAttempts := 0;
+ELSIF fbTONOn.Q THEN
+    (* Включение подтверждено. Запомнить это до снятия запроса. *)
+    xWasClosed := TRUE;
+    iVklStep := 0;
+    iVklAttempts := 0;
+ELSIF xWasClosed THEN
+    (* Не считать отключение после подтверждённого включения отказом включения. *)
+    xUnexpectedOff := fbTONOff.Q;
+ELSE
+    CASE iVklStep OF
+        0: (* Первая попытка: только при подтверждённом отключении и без активного сигнала квитирования. *)
+            IF fbTONOff.Q AND NOT ResetAlarm THEN
+                iVklAttempts := 1;
+                iVklStep := 10;
+            END_IF;
+        10: (* Импульс включения: завершить по таймеру или сразу при появлении сигнала IsOn. *)
+            IF fbVklPulse.Q OR IsOn THEN
+                iVklStep := 20;
+            END_IF;
+        20: (* Сигнал включения снят. Через 7 с повторить попытку, только если отключённое положение всё ещё подтверждается. *)
+            IF fbVklWait.Q AND fbTONOff.Q AND NOT ResetAlarm THEN
+                IF iVklAttempts < K3 THEN
+                    iVklAttempts := iVklAttempts + K1;
+                    iVklStep := 10; (* Возврат на шаг 10 формирует новый передний фронт сигнала включения. *)
+                ELSE
+                    xVklFailed := TRUE; (* После третьей попытки выдать сигнал отказа на один цикл ПЛК. *)
+                    iVklStep := 30;
+                END_IF;
+            END_IF;
+        30: (* После трёх попыток не подавать сигнал включения, пока запрос не снят. *)
+            iVklStep := 30;
+    ELSE (* При недопустимом номере шага вернуться к ожиданию. *)
+        iVklStep := 0;
+        iVklAttempts := 0;
+    END_CASE;
 END_IF;
 
-(* ??? Check when spring loading *)
-fbTPTON(IN := Vkl , PT := T#900ms);
-fbTPLoadBlock(IN := fbTPTON.Q, PT := T#5s);
+(* Шаги заменяют fbBlinkOn: на шаге 10 — импульс, на шаге 20 — пауза, затем шаг 10 даёт новый фронт.
+   Перед записью выхода в каждом цикле ПЛК заново проверять все условия включения в блоке. *)
+Vkl := xDrivePower AND SetOn AND NOT xError AND NOT IsOn AND iVklStep = 10;
 
-RST(MEP(xOn) OR xError, xOff);
-RST(MEP(xOff) OR xError, xOn);
-RST(xOn AND IsOn, xOn);
-RST(xOff AND NOT IsOn, xOff);
-
-fbBlinkOn(IN := xOn AND NOT fbTPLoadBlock.Q,
-TIMELOW := T#1000ms, TIMEHIGH := T#1000ms, Q := Vkl);
-fbBlinkOff(IN := xOff AND NOT fbTPLoadBlock.Q,
-TIMELOW := T#1000ms, TIMEHIGH := T#1000ms, Q := Otkl);
+(* Отключение не зависит от шагов включения. Отключать замкнутый выключатель, если
+   снят запрос на включение или активна тревога. Подавать импульсы до размыкания;
+   последнее AND сразу снимает сигнал отключения, если запрос на отключение исчез. *)
+Otkl := xDrivePower AND (NOT SetOn OR xError) AND IsOn;
+fbBlinkOff(
+    IN := Otkl,
+    TIMELOW := T#1000ms,
+    TIMEHIGH := T#1000ms
+);
+Otkl := Otkl AND fbBlinkOff.Q;

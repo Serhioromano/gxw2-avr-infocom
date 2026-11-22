@@ -5,38 +5,38 @@ fbAmalarm(
     Q := gxIsAlarm
 );
 
-(* X13 is assumed high with the common supply healthy. M8002 forces a reset
-   on the first RUN scan, even if X13 is already high. *)
+(* Предполагается, что при исправном общем питании на X13 высокий уровень. M8002
+   принудительно выполняет сброс в первом цикле после перехода в RUN, даже если X13 уже активен. *)
 xDrivePower := DI_Avarkontrol AND NOT M8002;
-(* The normally closed position contacts give TRUE for an open breaker. *)
+(* Нормально замкнутые контакты положения дают TRUE при отключённом выключателе. *)
 xAllOff := DI_Line1IsOff AND DI_Line2IsOff AND DI_GeneratorIsOff;
-(* Sample manual ON edges every scan. An ON pressed while unavailable is not
-   saved for later: a new button press is required once ON is permitted. *)
+(* В каждом цикле ПЛК отслеживать передние фронты ручных команд включения. Команда,
+   поданная во время запрета, не запоминается: после снятия запрета нужно нажать кнопку снова. *)
 xManualOn1 := MEP(gxOn1);
 xManualOn2 := MEP(gxOn2);
 xManualOnGen := MEP(gxOnGenerator);
 
 IF xAutoWasOn <> gxAvto THEN
     IF NOT gxAvto THEN
-        (* AUTO to MANUAL: copy actual positions, not pending AUTO commands.
-           A closed breaker stays requested closed even if AUTO had requested OFF.
-           An open breaker stays requested open, cancelling any pending ON retry. *)
+        (* Переход из автоматического режима в ручной: взять фактические положения, а не ожидающие команды.
+           Для включённого выключателя сохранить запрос на включённое положение, даже если автоматика запрашивала отключение.
+           Для отключённого выключателя оставить запрос снятым, отменив ожидающие попытки включения. *)
         xSetOn1 := NOT DI_Line1IsOff;
         xSetOn2 := NOT DI_Line2IsOff;
         xSetOnGen := NOT DI_GeneratorIsOff;
     ELSE
-        (* MANUAL to AUTO: discard pending manual ON requests before selection. *)
+        (* При переходе в автоматический режим перед выбором источника отменить невыполненные ручные запросы на включение. *)
         xSetOn1 := xSetOn1 AND NOT DI_Line1IsOff;
         xSetOn2 := xSetOn2 AND NOT DI_Line2IsOff;
         xSetOnGen := xSetOnGen AND NOT DI_GeneratorIsOff;
     END_IF;
     IF iStep <> 0 THEN
-        iStep := 10; (* Re-enter manual control or the selector, not the old source step. *)
+        iStep := 10; (* Вернуться к ручному управлению или выбору источника, а не к шагу прежнего источника. *)
     END_IF;
 END_IF;
 
-(* A source is eligible only if its phase relay and physical alarm input are
-   healthy and it has neither a latched alarm nor a recorded breaker problem. *)
+(* Источник доступен, только если реле контроля фаз и аппаратный вход контроля аварии
+   показывают норму, а у выключателя нет зафиксированной тревоги или неисправности. *)
 M1 := DI_RKF1 AND DI_Avar1 AND NOT VVALine1.xError AND NOT gxProblemVVA1;
 M2 := DI_RKF2 AND DI_Avar2 AND NOT VVALine2.xError AND NOT gxProblemVVA2;
 M3 := DI_RKF3 AND DI_AvarGenerator AND NOT VVAGen.xError AND NOT gxProblemVVAgen;
@@ -45,16 +45,16 @@ OUT_T(M1, TC1, SEC_TO_TIMER100(clTimeRKF1));
 OUT_T(M2, TC2, SEC_TO_TIMER100(clTimeRKF2));
 OUT_T(M3, TC3, SEC_TO_TIMER100(clTimeRKF3));
 
-(* TC30 runs while drive power is reported healthy: 100 x 100 ms = 10 s.
-   Loss of X13 resets it. Step 0 clears all old position requests while waiting. *)
+(* TC30 отсчитывает время при наличии сигнала исправности питания приводов: 100 × 100 мс = 10 с.
+   Пропадание сигнала X13 сбрасывает таймер. Во время ожидания на шаге 0 все прежние запросы снимаются. *)
 OUT_T(xDrivePower, TC30, K100);
 IF NOT xDrivePower OR NOT TS30 THEN
     iStep := 0;
 END_IF;
 
-(* Before a new automatic ON request, wait with all three OFF contacts
-   continuously high and no active request. Do not carry elapsed time from
-   a cancelled ON attempt to another source. K11 gives a nominal 1.1 s. *)
+(* Перед новым автоматическим запросом на включение выдержать паузу: все три сигнала
+   отключённого положения должны непрерывно оставаться активными, а запросов на включение быть не должно.
+   После отмены запроса не переносить отсчитанное время на другой источник. Номинальная выдержка при K11 — 1,1 с. *)
 OUT_T(
     gxAvto
     AND xDrivePower
@@ -64,7 +64,7 @@ OUT_T(
     K11
 );
 
-(* BackAuto
+(* Возврат в автоматический режим
 OUT_T(gxVVAOff, TC31, SEC_TO_TIMER100(clTimeBackAuto));
 IF TS31 THEN
 	gxVVAOff := FALSE;
@@ -72,13 +72,13 @@ END_IF;
  *)
 
 CASE iStep OF
-    0: (* Wait for drive power, spring charging and open breakers *)
+    0: (* Ожидание питания приводов, взвода пружин и отключённого положения выключателей. *)
         xGenerator := FALSE;
         gxStartGenerator := FALSE;
         xSetOn1 := FALSE;
         xSetOn2 := FALSE;
         xSetOnGen := FALSE;
-        (* Leave startup only after the delay and with all three breakers open. *)
+        (* Выйти из пускового шага только после выдержки времени, когда все три выключателя отключены. *)
         MOV(
             xDrivePower
             AND TS30
@@ -87,14 +87,14 @@ CASE iStep OF
             iStep
         );
 
-    10: (* Idle or manual control *)
+    10: (* Ожидание или ручное управление. *)
         IF gxAvto THEN
             iStep := 20;
             gxStartGenerator := FALSE;
         ELSIF NOT xAutoWasOn AND NOT M2002 AND xAllOff AND NOT (xSetOn1 OR xSetOn2 OR xSetOnGen) THEN
-            (* Require manual mode in the previous scan, no acknowledgement,
-               all breakers open, and no request already in progress. ELSIF
-               accepts at most one ON: Line 1, then Line 2, then generator. *)
+            (* В предыдущем цикле должен быть ручной режим. Не должно быть квитирования
+               или действующего запроса; все выключатели должны быть отключены. Цепочка ELSIF
+               принимает не более одного запроса на включение: сначала ввод 1, затем ввод 2, затем генератор. *)
             IF xManualOn1 AND M1 AND NOT gxOff1 THEN
                 xSetOn1 := TRUE;
             ELSIF xManualOn2 AND M2 AND NOT gxOff2 THEN
@@ -104,8 +104,8 @@ CASE iStep OF
             END_IF;
         END_IF;
         IF NOT gxAvto THEN
-            (* OFF, loss of source eligibility, or another breaker closing
-               cancels the corresponding manual request, including retries. *)
+            (* Команда отключения, потеря готовности источника или включение другого выключателя
+               отменяют соответствующий ручной запрос и его повторные попытки. *)
             RST(
                 gxOff1
                 OR NOT DI_Line2IsOff
@@ -130,7 +130,7 @@ CASE iStep OF
         END_IF;
         xGenerator := gxStartGenerator;
 
-    20: (* Select the first eligible source after its phase relay delay. *)
+    20: (* Выбрать первый доступный источник после выдержки времени по сигналу реле контроля фаз. *)
         MOV(TS1, 30, iStep);
         MOV(
             TS2
@@ -145,35 +145,35 @@ CASE iStep OF
             50,
             iStep
         );
-        (* Select the first eligible source after its phase relay delay. *)
+        (* Сохранить запрос на включение только для выбранного источника, остальные снять. *)
         xSetOn1 := xSetOn1 AND iStep = 30;
         xSetOn2 := xSetOn2 AND iStep = 40;
         xSetOnGen := xSetOnGen AND iStep = 50;
         xGenerator := NOT TS1 AND NOT TS2;
 
-    30: (* Line 1. The same interlock applies in steps 40 and 50. *)
-        (* Withdraw both other requests so their blocks can issue OFF. *)
+    30: (* Ввод 1. Такая же блокировка действует на шагах 40 и 50. *)
+        (* Снять запросы на включение двух других выключателей, чтобы их блоки могли подать команды отключения. *)
         xSetOn2 := FALSE;
         xSetOnGen := FALSE;
         MOV(
-            NOT TS1 (* Line 1 is no longer ready. *)
-            OR NOT M1, (* Line 1 no longer meets the immediate eligibility conditions. *)
+            NOT TS1 (* Ввод 1 больше не готов. *)
+            OR NOT M1, (* Ввод 1 больше не удовлетворяет условиям доступности, проверяемым без задержки. *)
             10,
             iStep
         );
-        (* Apply the dead time only to a new request. Keep an active request
-           when its own breaker closes and resets TC32 or VVA is still retrying. *)
+        (* Выдерживать паузу только перед новым запросом. Сохранять действующий запрос,
+           когда его выключатель включается и сбрасывает TC32 или когда VVA ещё выполняет повторные попытки. *)
         xSetOn1 := DI_GeneratorIsOff
             AND DI_Line2IsOff
             AND iStep = 30
             AND (xSetOn1 OR (xAllOff AND TS32));
 
-    40: (* Line 2: wait for Line 1 and generator OFF before requesting ON. *)
+    40: (* Ввод 2: перед запросом на включение дождаться отключения выключателей ввода 1 и генератора. *)
         xSetOn1 := FALSE;
         xSetOnGen := FALSE;
         MOV(
-            NOT TS2 (* Line 2 is no longer ready. *)
-            OR NOT M2, (* Line 2 no longer meets the immediate eligibility conditions. *)
+            NOT TS2 (* Ввод 2 больше не готов. *)
+            OR NOT M2, (* Ввод 2 больше не удовлетворяет условиям доступности, проверяемым без задержки. *)
             10,
             iStep
         );
@@ -182,14 +182,14 @@ CASE iStep OF
             AND iStep = 40
             AND (xSetOn2 OR (xAllOff AND TS32));
 
-    50: (* Generator: wait for both mains breakers OFF. Return to selection
-           if either mains source is ready again or the generator is no longer eligible. *)
+    50: (* Генератор: дождаться отключения выключателей обоих сетевых вводов. Вернуться к выбору источника,
+           если один из сетевых вводов снова готов или генератор больше недоступен. *)
         xSetOn2 := FALSE;
         xSetOn1 := FALSE;
         MOV(
-            NOT TS3 (* Generator voltage is no longer qualified. *)
-            OR NOT M3 (* Generator no longer meets the immediate eligibility conditions. *)
-            OR TS1 OR TS2, (* At least one mains source is ready. *)
+            NOT TS3 (* Готовность по напряжению генератора больше не подтверждается. *)
+            OR NOT M3 (* Генератор больше не удовлетворяет условиям доступности, проверяемым без задержки. *)
+            OR TS1 OR TS2, (* Готов хотя бы один сетевой ввод. *)
             10,
             iStep
         );
@@ -198,22 +198,22 @@ CASE iStep OF
             AND DI_Line2IsOff
             AND iStep = 50
             AND (xSetOnGen OR (xAllOff AND TS32));
-ELSE (* Invalid main step: drop requests and return to startup. *)
+ELSE (* Недопустимый номер шага: снять запросы и вернуться к пусковому шагу. *)
     iStep := 0;
     xSetOn1 := FALSE;
     xSetOn2 := FALSE;
     xSetOnGen := FALSE;
 END_CASE;
-xAutoWasOn := gxAvto; (* Store the mode for change detection on the next scan. *)
+xAutoWasOn := gxAvto; (* Запомнить режим, чтобы обнаружить его смену в следующем цикле ПЛК. *)
 
-TPStartGen(
+fbTPStartGen(
     IN := xGenerator,
     PT := SEC_TO_TIME(clTimeGenerator)
 );
-DO_StartGenerator := NOT (xGenerator OR TPStartGen.Q);
+DO_StartGenerator := NOT (xGenerator OR fbTPStartGen.Q);
 
-(* Call each breaker block every scan, including startup, so timers and outputs
-   update even with no ON request. Invert the OFF contacts to get IsOn. *)
+(* Вызывать блок каждого выключателя в каждом цикле, в том числе при пуске, чтобы таймеры
+   и выходы обновлялись даже без запроса на включение. Для IsOn инвертировать сигнал отключённого положения. *)
 VVALine1(
     SetOn := xSetOn1,
     IsOn := NOT DI_Line1IsOff,
@@ -239,9 +239,9 @@ VVAGen(
     Otkl := DO_OffGenerator
 );
 
-(* Release the HMI ON toggle in MANUAL if the breaker is open and no
-   accepted request remains, or if the FB has just reported exhausted retries.
-   Keep the toggle on during the retry pauses and after successful closing. *)
+(* В ручном режиме сбросить переключатель «Вкл.» на панели оператора только при отключённом выключателе:
+   если нет действующего запроса или блок только что сообщил об исчерпании попыток включения.
+   Не сбрасывать переключатель в паузах между попытками и после успешного включения. *)
 IF NOT gxAvto THEN
     RST(
         DI_Line1IsOff
@@ -260,8 +260,8 @@ IF NOT gxAvto THEN
     );
 END_IF;
 
-(* Latch exhausted retries or an unexpected opening. The eligibility checks
-   above exclude that breaker on the next scan until the problem is reset. *)
+(* Зафиксировать исчерпание попыток включения или неожиданное отключение. Со следующего цикла
+   проверка доступности исключает этот выключатель, пока неисправность не будет сброшена. *)
 SET(
     VVALine1.xVklFailed
     OR VVALine1.xUnexpectedOff,
