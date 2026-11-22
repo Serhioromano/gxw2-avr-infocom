@@ -52,6 +52,18 @@ IF NOT xDrivePower OR NOT TS30 THEN
     iStep := 0;
 END_IF;
 
+(* Before a new automatic ON request, wait with all three OFF contacts
+   continuously high and no active request. Do not carry elapsed time from
+   a cancelled ON attempt to another source. K11 gives a nominal 1.1 s. *)
+OUT_T(
+    gxAvto
+    AND xDrivePower
+    AND xAllOff
+    AND NOT (xSetOn1 OR xSetOn2 OR xSetOnGen),
+    TC32,
+    K11
+);
+
 (* BackAuto
 OUT_T(gxVVAOff, TC31, SEC_TO_TIMER100(clTimeBackAuto));
 IF TS31 THEN
@@ -149,9 +161,12 @@ CASE iStep OF
             10,
             iStep
         );
-        (* With either other breaker still closed, no ON request is sent and
-           no attempt is counted against this breaker. *)
-        xSetOn1 := DI_GeneratorIsOff AND DI_Line2IsOff AND iStep = 30;
+        (* Apply the dead time only to a new request. Keep an active request
+           when its own breaker closes and resets TC32 or VVA is still retrying. *)
+        xSetOn1 := DI_GeneratorIsOff
+            AND DI_Line2IsOff
+            AND iStep = 30
+            AND (xSetOn1 OR (xAllOff AND TS32));
 
     40: (* Line 2: wait for Line 1 and generator OFF before requesting ON. *)
         xSetOn1 := FALSE;
@@ -162,7 +177,10 @@ CASE iStep OF
             10,
             iStep
         );
-        xSetOn2 := DI_GeneratorIsOff AND DI_Line1IsOff AND iStep = 40;
+        xSetOn2 := DI_GeneratorIsOff
+            AND DI_Line1IsOff
+            AND iStep = 40
+            AND (xSetOn2 OR (xAllOff AND TS32));
 
     50: (* Generator: wait for both mains breakers OFF. Return to selection
            if either mains source is ready again or the generator is no longer eligible. *)
@@ -176,7 +194,10 @@ CASE iStep OF
             iStep
         );
         xGenerator := TRUE;
-        xSetOnGen := DI_Line1IsOff AND DI_Line2IsOff AND iStep = 50;
+        xSetOnGen := DI_Line1IsOff
+            AND DI_Line2IsOff
+            AND iStep = 50
+            AND (xSetOnGen OR (xAllOff AND TS32));
 ELSE (* Invalid main step: drop requests and return to startup. *)
     iStep := 0;
     xSetOn1 := FALSE;
