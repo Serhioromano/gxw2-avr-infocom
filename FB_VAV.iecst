@@ -1,0 +1,41 @@
+RST(xError AND ResetAlarm, xError);
+
+(* Самостоятельно октлючился в авто режиме
+или сработало аварийное отключение *)
+xTempError := FALSE;
+fbAmIsOn(iNum := AlarmNum, Q := xTempError);
+
+SET(fbAmIsOn.Q, xError);
+SET(xError AND ResetAlarm, xOff);
+
+fbTONOn(IN := isOn, PT := T#100ms);
+fbTONOff(IN := NOT isOn, PT := T#100ms);
+
+IF NOT xError THEN
+	(* Задача включить автомат *)
+	SET(MEP(SetOn) AND NOT IsOn, xOn);
+
+	(* Задача отключить автомат *)
+    SET(MEF(SetOn) AND IsOn, xOff);
+
+	(* Автомат сам отключился *)
+	RST(SetOn AND MEP(fbTONOff.Q), SetOn);
+
+	(* Автомат сам включился *)
+	RST(NOT SetOn AND MEP(fbTONOn.Q), gxAvto);
+	SET(NOT SetOn AND MEP(fbTONOn.Q), SetOn);
+END_IF;
+
+(* ??? Check when spring loading *)
+fbTPTON(IN := Vkl , PT := T#900ms);
+fbTPLoadBlock(IN := fbTPTON.Q, PT := T#5s);
+
+RST(MEP(xOn) OR xError, xOff);
+RST(MEP(xOff) OR xError, xOn);
+RST(xOn AND IsOn, xOn);
+RST(xOff AND NOT IsOn, xOff);
+
+fbBlinkOn(IN := xOn AND NOT fbTPLoadBlock.Q,
+TIMELOW := T#1000ms, TIMEHIGH := T#1000ms, Q := Vkl);
+fbBlinkOff(IN := xOff AND NOT fbTPLoadBlock.Q,
+TIMELOW := T#1000ms, TIMEHIGH := T#1000ms, Q := Otkl);
