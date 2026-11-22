@@ -9,6 +9,7 @@ PLC source exports for an automatic transfer switch (АВР) that selects betwee
 - `PRG_PROCESS.iecst` — initializes Modbus RTU and handles alarms, resets, and event logging.
 - `_gvl.csv` — shared labels; `_io.csv` — physical I/O mappings; `PRG_*.csv` — local program labels.
 - `FB_VVA.csv` — breaker function-block labels. `FB_VAV.iecst` is empty; note the different spelling.
+- `пкл.txt` — PLC IO bindings.
 
 ## Working here
 
