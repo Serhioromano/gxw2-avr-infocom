@@ -1,27 +1,56 @@
 (* fbAmBlock(iProcessNum := 1, iSeverity := AM_ERROR, Q := gxIsAlarm); *)
-fbAmalarm(iProcessNum := 0, iSeverity := 0, Q := gxIsAlarm);
-wTimeRKFs := SEL(clTimeRKF1 > clTimeRKF2, clTimeRKF2, clTimeRKF1);
+fbAmalarm(
+    iProcessNum := 0,
+    iSeverity := 0,
+    Q := gxIsAlarm
+);
 
-IF MEF(gxAvto) THEN
-    iStep := 10;
+(* X13 is assumed high with the common supply healthy. M8002 forces a reset
+   on the first RUN scan, even if X13 is already high. *)
+xDrivePower := DI_Avarkontrol AND NOT M8002;
+(* The normally closed position contacts give TRUE for an open breaker. *)
+xAllOff := DI_Line1IsOff AND DI_Line2IsOff AND DI_GeneratorIsOff;
+(* Sample manual ON edges every scan. An ON pressed while unavailable is not
+   saved for later: a new button press is required once ON is permitted. *)
+xManualOn1 := MEP(gxOn1);
+xManualOn2 := MEP(gxOn2);
+xManualOnGen := MEP(gxOnGenerator);
+
+IF xAutoWasOn <> gxAvto THEN
+    IF NOT gxAvto THEN
+        (* AUTO to MANUAL: copy actual positions, not pending AUTO commands.
+           A closed breaker stays requested closed even if AUTO had requested OFF.
+           An open breaker stays requested open, cancelling any pending ON retry. *)
+        xSetOn1 := NOT DI_Line1IsOff;
+        xSetOn2 := NOT DI_Line2IsOff;
+        xSetOnGen := NOT DI_GeneratorIsOff;
+    ELSE
+        (* MANUAL to AUTO: discard pending manual ON requests before selection. *)
+        xSetOn1 := xSetOn1 AND NOT DI_Line1IsOff;
+        xSetOn2 := xSetOn2 AND NOT DI_Line2IsOff;
+        xSetOnGen := xSetOnGen AND NOT DI_GeneratorIsOff;
+    END_IF;
+    IF iStep <> 0 THEN
+        iStep := 10; (* Re-enter manual control or the selector, not the old source step. *)
+    END_IF;
 END_IF;
 
-IF MEP(gxAvto) THEN
-    iStep := 0;
-END_IF;
-
-M1 := DI_RKF1 AND NOT VVALine1.xError;
-M2 := DI_RKF2 AND NOT VVALine2.xError;
-M3 := DI_RKF3 AND NOT VVAGen.xError;
+(* A source is eligible only if its phase relay and physical alarm input are
+   healthy and it has neither a latched alarm nor a recorded breaker problem. *)
+M1 := DI_RKF1 AND DI_Avar1 AND NOT VVALine1.xError AND NOT gxProblemVVA1;
+M2 := DI_RKF2 AND DI_Avar2 AND NOT VVALine2.xError AND NOT gxProblemVVA2;
+M3 := DI_RKF3 AND DI_AvarGenerator AND NOT VVAGen.xError AND NOT gxProblemVVAgen;
 
 OUT_T(M1, TC1, SEC_TO_TIMER100(clTimeRKF1));
 OUT_T(M2, TC2, SEC_TO_TIMER100(clTimeRKF2));
 OUT_T(M3, TC3, SEC_TO_TIMER100(clTimeRKF3));
 
-OUT_T(TRUE, TC30, 100);
-OUT_T(iStep = 30 AND DI_Line1IsOff, TC4, 100);
-OUT_T(iStep = 40 AND DI_Line2IsOff, TC5, 100);
-OUT_T(iStep = 50 AND DI_GeneratorIsOff, TC6, 100);
+(* TC30 runs while drive power is reported healthy: 100 x 100 ms = 10 s.
+   Loss of X13 resets it. Step 0 clears all old position requests while waiting. *)
+OUT_T(xDrivePower, TC30, K100);
+IF NOT xDrivePower OR NOT TS30 THEN
+    iStep := 0;
+END_IF;
 
 (* BackAuto
 OUT_T(gxVVAOff, TC31, SEC_TO_TIMER100(clTimeBackAuto));
@@ -31,152 +60,205 @@ END_IF;
  *)
 
 CASE iStep OF
-    0: (* Reset timers *)
+    0: (* Wait for drive power, spring charging and open breakers *)
         xGenerator := FALSE;
         gxStartGenerator := FALSE;
-        MOV(TS30, 1, iStep);
+        xSetOn1 := FALSE;
+        xSetOn2 := FALSE;
+        xSetOnGen := FALSE;
+        (* Leave startup only after the delay and with all three breakers open. *)
+        MOV(
+            xDrivePower
+            AND TS30
+            AND xAllOff,
+            10,
+            iStep
+        );
 
-    1: (* Test everything *)
-    	xAllGood := TRUE;
-
-
-        MOV(xAllGood, 10, iStep);
-
-    10: (* Idle *)
-
-        MOV(gxAvto, 20, iStep);
-        RST(gxAvto, gxStartGenerator);
-
-		SET(
-			MEP(gxOn1)
-			AND DI_Line2IsOff
-			AND DI_Line1IsOff
-			AND DI_GeneratorIsOff
-			AND DI_RKF1,
-			VVALine1.SetOn
-		);
-		RST(
-			MEP(gxOff1)
-			OR NOT DI_Line2IsOff
-			OR NOT DI_GeneratorIsOff
-			OR NOT DI_RKF1,
-			VVALine1.SetOn
-		);
-
-		SET(
-			MEP(gxOn2)
-			AND DI_Line2IsOff
-			AND DI_Line1IsOff
-			AND DI_GeneratorIsOff
-			AND DI_RKF2,
-			VVALine2.SetOn
-		);
-		RST(
-			MEP(gxOff2)
-			OR NOT DI_Line1IsOff
-			OR NOT DI_GeneratorIsOff
-			OR NOT DI_RKF2,
-			VVALine2.SetOn
-		);
-
-		SET(
-			MEP(gxOnGenerator)
-			AND DI_Line2IsOff
-			AND DI_Line1IsOff
-			AND DI_GeneratorIsOff
-			AND DI_RKF3,
-			VVAGen.SetOn
-		);
-		RST(
-			MEP(gxOffGenerator)
-			OR NOT DI_Line1IsOff
-			OR NOT DI_Line2IsOff
-			OR NOT DI_RKF3,
-			VVAGen.SetOn
-		);
-
+    10: (* Idle or manual control *)
+        IF gxAvto THEN
+            iStep := 20;
+            gxStartGenerator := FALSE;
+        ELSIF NOT xAutoWasOn AND NOT M2002 AND xAllOff AND NOT (xSetOn1 OR xSetOn2 OR xSetOnGen) THEN
+            (* Require manual mode in the previous scan, no acknowledgement,
+               all breakers open, and no request already in progress. ELSIF
+               accepts at most one ON: Line 1, then Line 2, then generator. *)
+            IF xManualOn1 AND M1 AND NOT gxOff1 THEN
+                xSetOn1 := TRUE;
+            ELSIF xManualOn2 AND M2 AND NOT gxOff2 THEN
+                xSetOn2 := TRUE;
+            ELSIF xManualOnGen AND M3 AND NOT gxOffGenerator THEN
+                xSetOnGen := TRUE;
+            END_IF;
+        END_IF;
+        IF NOT gxAvto THEN
+            (* OFF, loss of source eligibility, or another breaker closing
+               cancels the corresponding manual request, including retries. *)
+            RST(
+                gxOff1
+                OR NOT DI_Line2IsOff
+                OR NOT DI_GeneratorIsOff
+                OR NOT M1,
+                xSetOn1
+            );
+            RST(
+                gxOff2
+                OR NOT DI_Line1IsOff
+                OR NOT DI_GeneratorIsOff
+                OR NOT M2,
+                xSetOn2
+            );
+            RST(
+                gxOffGenerator
+                OR NOT DI_Line1IsOff
+                OR NOT DI_Line2IsOff
+                OR NOT M3,
+                xSetOnGen
+            );
+        END_IF;
         xGenerator := gxStartGenerator;
 
-    20: (* Selector *)
+    20: (* Select the first eligible source after its phase relay delay. *)
         MOV(TS1, 30, iStep);
-        MOV(TS2 AND NOT TS1, 40, iStep);
-        MOV(NOT TS1 AND NOT TS2 AND TS3, 50, iStep);
-		xGenerator := NOT TS1 AND NOT TS2;
-
-    30: (* Line 1 *)
-	 VVALine2.SetOn := FALSE;
-	 VVAGen.SetOn := FALSE;
-        SET(TS4, gxProblemVVA1);
-        SET(TS4, gxVVAOff);
-
         MOV(
-        	NOT TS1 (* Контроль фаз *)
-        	OR TS4 (* выключение в ручну *)
-        	OR VVALine1.xError, (* автомат в ошибке *)
-        	10,
-        	iStep
+            TS2
+            AND NOT TS1,
+            40,
+            iStep
         );
-
-        VVALine1.SetOn := DI_GeneratorIsOff
-        	AND DI_Line2IsOff AND iStep = 30;
-
-    40: (* Line 2 *)
-	 VVALine1.SetOn := FALSE;
-	 VVAGen.SetOn := FALSE;
-        SET(TS5, gxProblemVVA2);
-        SET(TS5, gxVVAOff);
-
         MOV(
-        	NOT TS2 (* Контроль фаз *)
-        	OR TS5 (* выключение в ручну *)
-        	OR VVALine2.xError, (* автомат в ошибке *)
-        	10,
-        	iStep
+            NOT TS1
+            AND NOT TS2
+            AND TS3,
+            50,
+            iStep
         );
+        (* Select the first eligible source after its phase relay delay. *)
+        xSetOn1 := xSetOn1 AND iStep = 30;
+        xSetOn2 := xSetOn2 AND iStep = 40;
+        xSetOnGen := xSetOnGen AND iStep = 50;
+        xGenerator := NOT TS1 AND NOT TS2;
 
-        VVALine2.SetOn := DI_GeneratorIsOff
-        	AND DI_Line1IsOff AND iStep = 40;
-
-    50: (* Generator *)
-	 VVALine2.SetOn := FALSE;
-	 VVALine1.SetOn := FALSE;
-        SET(TS6, gxProblemVVAgen);
-        SET(TS6, gxVVAOff);
-
+    30: (* Line 1. The same interlock applies in steps 40 and 50. *)
+        (* Withdraw both other requests so their blocks can issue OFF. *)
+        xSetOn2 := FALSE;
+        xSetOnGen := FALSE;
         MOV(
-        	NOT TS3 (* Контроль фаз *)
-        	OR TS1 OR TS2 (* появилась сеть *)
-        	OR TS6 (* выключение в ручну *)
-        	OR VVAGen.xError, (* автомат в ошибке *)
-        	10,
-        	iStep
+            NOT TS1 (* Line 1 is no longer ready. *)
+            OR NOT M1, (* Line 1 no longer meets the immediate eligibility conditions. *)
+            10,
+            iStep
         );
+        (* With either other breaker still closed, no ON request is sent and
+           no attempt is counted against this breaker. *)
+        xSetOn1 := DI_GeneratorIsOff AND DI_Line2IsOff AND iStep = 30;
 
-		xGenerator := TRUE;
-        VVAGen.SetOn := DI_Line1IsOff
-        	AND DI_Line2IsOff AND iStep = 50;
+    40: (* Line 2: wait for Line 1 and generator OFF before requesting ON. *)
+        xSetOn1 := FALSE;
+        xSetOnGen := FALSE;
+        MOV(
+            NOT TS2 (* Line 2 is no longer ready. *)
+            OR NOT M2, (* Line 2 no longer meets the immediate eligibility conditions. *)
+            10,
+            iStep
+        );
+        xSetOn2 := DI_GeneratorIsOff AND DI_Line1IsOff AND iStep = 40;
+
+    50: (* Generator: wait for both mains breakers OFF. Return to selection
+           if either mains source is ready again or the generator is no longer eligible. *)
+        xSetOn2 := FALSE;
+        xSetOn1 := FALSE;
+        MOV(
+            NOT TS3 (* Generator voltage is no longer qualified. *)
+            OR NOT M3 (* Generator no longer meets the immediate eligibility conditions. *)
+            OR TS1 OR TS2, (* At least one mains source is ready. *)
+            10,
+            iStep
+        );
+        xGenerator := TRUE;
+        xSetOnGen := DI_Line1IsOff AND DI_Line2IsOff AND iStep = 50;
+ELSE (* Invalid main step: drop requests and return to startup. *)
+    iStep := 0;
+    xSetOn1 := FALSE;
+    xSetOn2 := FALSE;
+    xSetOnGen := FALSE;
 END_CASE;
+xAutoWasOn := gxAvto; (* Store the mode for change detection on the next scan. *)
 
-TPStartGen(IN := xGenerator, PT := SEC_TO_TIME(clTimeGenerator));
+TPStartGen(
+    IN := xGenerator,
+    PT := SEC_TO_TIME(clTimeGenerator)
+);
 DO_StartGenerator := NOT (xGenerator OR TPStartGen.Q);
 
-IF iStep > 0 THEN
-	VVALine1(
-		IsOn := NOT DI_Line1IsOff,
-		ResetAlarm := M2002,
-		Vkl := DO_On1,
-		Otkl := DO_Off1
-	);
-	VVALine2(
-		IsOn := NOT DI_Line2IsOff,
-		ResetAlarm := M2002,
-		Vkl := DO_On2,
-		Otkl := DO_Off2
-	);
-	VVAGen(
-		IsOn := NOT DI_GeneratorIsOff,
-		ResetAlarm := M2002,
-		Vkl := DO_OnGenerator,
-		Otkl := DO_OffGenerator
-	);
+(* Call each breaker block every scan, including startup, so timers and outputs
+   update even with no ON request. Invert the OFF contacts to get IsOn. *)
+VVALine1(
+    SetOn := xSetOn1,
+    IsOn := NOT DI_Line1IsOff,
+    xDrivePower := xDrivePower,
+    ResetAlarm := M2002,
+    Vkl := DO_On1,
+    Otkl := DO_Off1
+);
+VVALine2(
+    SetOn := xSetOn2,
+    IsOn := NOT DI_Line2IsOff,
+    xDrivePower := xDrivePower,
+    ResetAlarm := M2002,
+    Vkl := DO_On2,
+    Otkl := DO_Off2
+);
+VVAGen(
+    SetOn := xSetOnGen,
+    IsOn := NOT DI_GeneratorIsOff,
+    xDrivePower := xDrivePower,
+    ResetAlarm := M2002,
+    Vkl := DO_OnGenerator,
+    Otkl := DO_OffGenerator
+);
+
+(* Release the HMI ON toggle in MANUAL if the breaker is open and no
+   accepted request remains, or if the FB has just reported exhausted retries.
+   Keep the toggle on during the retry pauses and after successful closing. *)
+IF NOT gxAvto THEN
+    RST(
+        DI_Line1IsOff
+        AND (NOT xSetOn1 OR VVALine1.xVklFailed),
+        gxOn1
+    );
+    RST(
+        DI_Line2IsOff
+        AND (NOT xSetOn2 OR VVALine2.xVklFailed),
+        gxOn2
+    );
+    RST(
+        DI_GeneratorIsOff
+        AND (NOT xSetOnGen OR VVAGen.xVklFailed),
+        gxOnGenerator
+    );
 END_IF;
+
+(* Latch exhausted retries or an unexpected opening. The eligibility checks
+   above exclude that breaker on the next scan until the problem is reset. *)
+SET(
+    VVALine1.xVklFailed
+    OR VVALine1.xUnexpectedOff,
+    gxProblemVVA1
+);
+SET(
+    VVALine2.xVklFailed
+    OR VVALine2.xUnexpectedOff,
+    gxProblemVVA2
+);
+SET(
+    VVAGen.xVklFailed
+    OR VVAGen.xUnexpectedOff,
+    gxProblemVVAgen
+);
+SET(
+    gxProblemVVA1
+    OR gxProblemVVA2
+    OR gxProblemVVAgen,
+    gxVVAOff
+);

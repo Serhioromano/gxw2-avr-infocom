@@ -12,11 +12,30 @@ xMBInit := MB_SLAVE_INIT_PORT2(TRUE, 20, PortSettings);
 (* Тревоги *)
 OUT_T(NOT DI_Avarkontrol, TC24, 10);
 fbAmSet(iNum := 0, xState := TS24);
-OUT_T(NOT DI_Avar1 OR gxProblemVVA1, TC21, 5);
+(* For alarms 1-3, start the 500 ms timer if either:
+   - X13 and TC30 say drive power has recovered, but the individual alarm input is low;
+   - MAIN has already recorded exhausted retries or unexpected opening.
+   A known breaker problem stays visible even if the common supply drops. *)
+OUT_T(
+    (DI_Avarkontrol AND TS30 AND NOT DI_Avar1)
+    OR gxProblemVVA1,
+    TC21,
+    5
+);
 fbAmSet(iNum := 1, xState := TS21);
-OUT_T(NOT DI_Avar2 OR gxProblemVVA2, TC22, 5);
+OUT_T(
+    (DI_Avarkontrol AND TS30 AND NOT DI_Avar2)
+    OR gxProblemVVA2,
+    TC22,
+    5
+);
 fbAmSet(iNum := 2, xState := TS22);
-OUT_T(NOT DI_AvarGenerator OR gxProblemVVAgen, TC23, 5);
+OUT_T(
+    (DI_Avarkontrol AND TS30 AND NOT DI_AvarGenerator)
+    OR gxProblemVVAgen,
+    TC23,
+    5
+);
 fbAmSet(iNum := 3, xState := TS23);
 fbAmSet(iNum := 4, xState := FALSE);
 OUT_T(DO_On1 AND DI_Line1IsOff, TC11, 10);
@@ -31,8 +50,8 @@ OUT_T(DO_Ongenerator AND DI_GeneratorIsOff, TC15, 10);
 fbAmSet(iNum := 9, xState := TS15);
 OUT_T(DO_OffGenerator AND NOT DI_GeneratorIsOff, TC16, 10);
 fbAmSet(iNum := 10, xState := TS16);
-OUT_T(DO_OnSection AND DI_SectionIsOff , TC17, 10);
-fbAmSet(iNum := 1, xState := TS17);
+(* No sectional ON check here: the old check also wrote alarm 1 and could
+   overwrite the Line 1 alarm condition in the same scan. *)
 OUT_T(DO_OffSection AND NOT DI_SectionIsOff, TC18, 10);
 fbAmSet(iNum := 12, xState := TS18);
 OUT_T(NOT DO_StartGenerator AND NOT DI_RKF3, TC19, SEC_TO_TIMER100(clStartgenerator));
