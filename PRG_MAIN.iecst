@@ -1,0 +1,182 @@
+(* fbAmBlock(iProcessNum := 1, iSeverity := AM_ERROR, Q := gxIsAlarm); *)
+fbAmalarm(iProcessNum := 0, iSeverity := 0, Q := gxIsAlarm);
+wTimeRKFs := SEL(clTimeRKF1 > clTimeRKF2, clTimeRKF2, clTimeRKF1);
+
+IF MEF(gxAvto) THEN
+    iStep := 10;
+END_IF;
+
+IF MEP(gxAvto) THEN
+    iStep := 0;
+END_IF;
+
+M1 := DI_RKF1 AND NOT VVALine1.xError;
+M2 := DI_RKF2 AND NOT VVALine2.xError;
+M3 := DI_RKF3 AND NOT VVAGen.xError;
+
+OUT_T(M1, TC1, SEC_TO_TIMER100(clTimeRKF1));
+OUT_T(M2, TC2, SEC_TO_TIMER100(clTimeRKF2));
+OUT_T(M3, TC3, SEC_TO_TIMER100(clTimeRKF3));
+
+OUT_T(TRUE, TC30, 100);
+OUT_T(iStep = 30 AND DI_Line1IsOff, TC4, 100);
+OUT_T(iStep = 40 AND DI_Line2IsOff, TC5, 100);
+OUT_T(iStep = 50 AND DI_GeneratorIsOff, TC6, 100);
+
+(* BackAuto
+OUT_T(gxVVAOff, TC31, SEC_TO_TIMER100(clTimeBackAuto));
+IF TS31 THEN
+	gxVVAOff := FALSE;
+END_IF;
+ *)
+
+CASE iStep OF
+    0: (* Reset timers *)
+        xGenerator := FALSE;
+        gxStartGenerator := FALSE;
+        MOV(TS30, 1, iStep);
+
+    1: (* Test everything *)
+    	xAllGood := TRUE;
+
+
+        MOV(xAllGood, 10, iStep);
+
+    10: (* Idle *)
+
+        MOV(gxAvto, 20, iStep);
+        RST(gxAvto, gxStartGenerator);
+
+		SET(
+			MEP(gxOn1)
+			AND DI_Line2IsOff
+			AND DI_Line1IsOff
+			AND DI_GeneratorIsOff
+			AND DI_RKF1,
+			VVALine1.SetOn
+		);
+		RST(
+			MEP(gxOff1)
+			OR NOT DI_Line2IsOff
+			OR NOT DI_GeneratorIsOff
+			OR NOT DI_RKF1,
+			VVALine1.SetOn
+		);
+
+		SET(
+			MEP(gxOn2)
+			AND DI_Line2IsOff
+			AND DI_Line1IsOff
+			AND DI_GeneratorIsOff
+			AND DI_RKF2,
+			VVALine2.SetOn
+		);
+		RST(
+			MEP(gxOff2)
+			OR NOT DI_Line1IsOff
+			OR NOT DI_GeneratorIsOff
+			OR NOT DI_RKF2,
+			VVALine2.SetOn
+		);
+
+		SET(
+			MEP(gxOnGenerator)
+			AND DI_Line2IsOff
+			AND DI_Line1IsOff
+			AND DI_GeneratorIsOff
+			AND DI_RKF3,
+			VVAGen.SetOn
+		);
+		RST(
+			MEP(gxOffGenerator)
+			OR NOT DI_Line1IsOff
+			OR NOT DI_Line2IsOff
+			OR NOT DI_RKF3,
+			VVAGen.SetOn
+		);
+
+        xGenerator := gxStartGenerator;
+
+    20: (* Selector *)
+        MOV(TS1, 30, iStep);
+        MOV(TS2 AND NOT TS1, 40, iStep);
+        MOV(NOT TS1 AND NOT TS2 AND TS3, 50, iStep);
+		xGenerator := NOT TS1 AND NOT TS2;
+
+    30: (* Line 1 *)
+	 VVALine2.SetOn := FALSE;
+	 VVAGen.SetOn := FALSE;
+        SET(TS4, gxProblemVVA1);
+        SET(TS4, gxVVAOff);
+
+        MOV(
+        	NOT TS1 (* Контроль фаз *)
+        	OR TS4 (* выключение в ручну *)
+        	OR VVALine1.xError, (* автомат в ошибке *)
+        	10,
+        	iStep
+        );
+
+        VVALine1.SetOn := DI_GeneratorIsOff
+        	AND DI_Line2IsOff AND iStep = 30;
+
+    40: (* Line 2 *)
+	 VVALine1.SetOn := FALSE;
+	 VVAGen.SetOn := FALSE;
+        SET(TS5, gxProblemVVA2);
+        SET(TS5, gxVVAOff);
+
+        MOV(
+        	NOT TS2 (* Контроль фаз *)
+        	OR TS5 (* выключение в ручну *)
+        	OR VVALine2.xError, (* автомат в ошибке *)
+        	10,
+        	iStep
+        );
+
+        VVALine2.SetOn := DI_GeneratorIsOff
+        	AND DI_Line1IsOff AND iStep = 40;
+
+    50: (* Generator *)
+	 VVALine2.SetOn := FALSE;
+	 VVALine1.SetOn := FALSE;
+        SET(TS6, gxProblemVVAgen);
+        SET(TS6, gxVVAOff);
+
+        MOV(
+        	NOT TS3 (* Контроль фаз *)
+        	OR TS1 OR TS2 (* появилась сеть *)
+        	OR TS6 (* выключение в ручну *)
+        	OR VVAGen.xError, (* автомат в ошибке *)
+        	10,
+        	iStep
+        );
+
+		xGenerator := TRUE;
+        VVAGen.SetOn := DI_Line1IsOff
+        	AND DI_Line2IsOff AND iStep = 50;
+END_CASE;
+
+TPStartGen(IN := xGenerator, PT := SEC_TO_TIME(clTimeGenerator));
+DO_StartGenerator := NOT (xGenerator OR TPStartGen.Q);
+
+IF iStep > 0 THEN
+	VVALine1(
+		IsOn := NOT DI_Line1IsOff,
+		ResetAlarm := M2002,
+		Vkl := DO_On1,
+		Otkl := DO_Off1
+	);
+	VVALine2(
+		IsOn := NOT DI_Line2IsOff,
+		ResetAlarm := M2002,
+		Vkl := DO_On2,
+		Otkl := DO_Off2
+	);
+	VVAGen(
+		IsOn := NOT DI_GeneratorIsOff,
+		ResetAlarm := M2002,
+		Vkl := DO_OnGenerator,
+		Otkl := DO_OffGenerator
+	);
+END_IF;

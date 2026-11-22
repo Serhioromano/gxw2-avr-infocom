@@ -1,0 +1,37 @@
+AM_D_START := 3000;
+
+VVALine1.AlarmNum := 1;
+VVALine2.AlarmNum := 2;
+VVAGen.AlarmNum := 3;
+VVASec.AlarmNum := 4;
+
+(* Ошибка UPS *)
+fbAmInit(iNum := 0, iSeverity := 3, iProcess := 1, xLatch := 0, xBuzzer := 0, xLock := 0);
+(* Ошибка ВА Сеть 1 *)
+fbAmInit(iNum := 1 , xLatch := 1, xLock := 0 );
+(* Ошибка ВА Сеть 2 *)
+fbAmInit(iNum := 2 , xLatch := 1, xLock := 0 );
+(* Ошибка ВА Генератор *)
+fbAmInit(iNum := 3 , xLatch := 1, xLock := 0 );
+(* Ошибка ВА Секционный *)
+fbAmInit(iNum := 4 , xLatch := 1, xLock := 0);
+(* Отказ вкл ВА Сеть 1 *)
+fbAmInit(iNum := 5, xLatch := 0, xLock := 0);
+(* Отказ выкл ВА Сеть 1 *)
+fbAmInit(iNum := 6 , xLatch := 0, xLock := 0 );
+(* Отказ вкл ВА Сеть 2 *)
+fbAmInit(iNum := 7 , xLatch := 0, xLock := 0 );
+(* Отказ выкл ВА Сеть 2 *)
+fbAmInit(iNum := 8 , xLatch := 0, xLock := 0 );
+(* Отказ вкл ВА Генератор *)
+fbAmInit(iNum := 9 , xLatch := 0, xLock := 0);
+(* Отказ выкл ВА Генератор *)
+fbAmInit(iNum := 10, xLatch := 0, xLock := 0);
+(* Отказ вкл ВА Секционный *)
+fbAmInit(iNum := 11 , xLatch := 0, xLock := 0 );
+(* Отказ выкл ВА Секционный *)
+fbAmInit(iNum := 12 , xLatch := 0, xLock := 0 );
+(* Отказ запуска генератора *)
+fbAmInit(iNum := 13 , xLatch := 1, xLock := 0 );
+(* Данные не заполнены *)
+fbAmInit(iNum := 14 , xLatch := 0, xLock := 1);
